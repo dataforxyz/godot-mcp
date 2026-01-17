@@ -205,12 +205,26 @@ export const getAllToolDefinitions = (): ToolDefinition[] => {
 
 /**
  * Get a tool handler by name
+ * Enforces READ_ONLY_MODE by rejecting write tools
  */
 export const getToolHandler = (
   toolName: string,
 ): ((args: any) => Promise<ToolResponse>) | undefined => {
   const tool = toolRegistry.get(toolName);
-  return tool?.handler;
+
+  if (!tool) {
+    return undefined;
+  }
+
+  // Enforce READ_ONLY_MODE: reject write tools even if called directly
+  if (READ_ONLY_MODE && !tool.readOnly) {
+    console.warn(
+      `[READ_ONLY_MODE] Rejected attempt to call write tool: ${toolName}`,
+    );
+    return undefined;
+  }
+
+  return tool.handler;
 };
 
 /**

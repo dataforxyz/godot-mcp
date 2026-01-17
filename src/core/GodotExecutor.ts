@@ -3,8 +3,7 @@
  * Handles execution of Godot operations and commands
  */
 
-import { promisify } from 'util';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,7 +12,61 @@ import { normalizePath } from './PathManager';
 import { logDebug } from '../utils/Logger';
 import { GODOT_DEBUG_MODE } from '../config/config';
 
-const execAsync = promisify(exec);
+// Whitelist of allowed operations to prevent injection
+const ALLOWED_OPERATIONS = new Set([
+  'create_scene',
+  'add_node',
+  'edit_node',
+  'remove_node',
+  'load_sprite',
+  'export_mesh_library',
+  'save_scene',
+  'get_uid',
+  'resave_resources',
+]);
+
+/**
+ * Validate operation name against whitelist
+ */
+const isValidOperation = (operation: string): boolean => {
+  return ALLOWED_OPERATIONS.has(operation);
+};
+
+/**
+ * Execute a command using spawn and return stdout/stderr as a promise
+ */
+const spawnAsync = (
+  command: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> => {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { stdio: 'pipe' });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on('error', (err) => {
+      reject(err);
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        // Return stdout/stderr even on non-zero exit (Godot may exit with errors)
+        resolve({ stdout, stderr });
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+  });
+};
 
 const getOperationsScriptPath = (): string => {
   const __filename = fileURLToPath(import.meta.url);
@@ -38,7 +91,7 @@ export const isGodot44OrLater = (version: string): boolean => {
  * Get Godot version
  */
 export const getGodotVersion = async (godotPath: string): Promise<string> => {
-  const { stdout } = await execAsync(`"${godotPath}" --version`);
+  const { stdout } = await spawnAsync(godotPath, ['--version']);
   return stdout.trim();
 };
 
@@ -54,6 +107,11 @@ export const executeOperation = async (
   logDebug(`Executing operation: ${operation} in project: ${projectPath}`);
   logDebug(`Original operation params: ${JSON.stringify(params)}`);
 
+  // Validate operation against whitelist to prevent injection
+  if (!isValidOperation(operation)) {
+    throw new Error(`Invalid operation: ${operation}. Operation not in whitelist.`);
+  }
+
   // Normalize the project path to handle Windows path issues
   const normalizedProjectPath = normalizePath(projectPath);
 
@@ -61,46 +119,32 @@ export const executeOperation = async (
   const snakeCaseParams = convertCamelToSnakeCase(params);
   logDebug(`Converted snake_case params: ${JSON.stringify(snakeCaseParams)}`);
 
-  try {
-    // Serialize the snake_case parameters to a valid JSON string
-    const paramsJson = JSON.stringify(snakeCaseParams);
-    // Escape double quotes and backslashes for shell safety
-    const escapedParams = paramsJson.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // Serialize the snake_case parameters to a valid JSON string
+  // No shell escaping needed - spawn passes arguments directly
+  const paramsJson = JSON.stringify(snakeCaseParams);
 
-    // Add debug arguments if debug mode is enabled
-    const debugArgs = GODOT_DEBUG_MODE ? ['--debug-godot'] : [];
+  // Get the operations script path
+  const operationsScriptPath = getOperationsScriptPath();
 
-    // Get the operations script path
-    const operationsScriptPath = getOperationsScriptPath();
+  // Build argument array - spawn handles escaping automatically
+  const args = [
+    '--headless',
+    '--path',
+    normalizedProjectPath,
+    '--script',
+    operationsScriptPath,
+    operation,
+    paramsJson,
+  ];
 
-    // Construct the command with the operation and JSON parameters
-    const cmd = [
-      `"${godotPath}"`,
-      '--headless',
-      '--path',
-      `"${normalizedProjectPath}"`,
-      '--script',
-      `"${operationsScriptPath}"`,
-      operation,
-      `"${escapedParams}"`,
-      ...debugArgs,
-    ].join(' ');
-
-    logDebug(`Command: ${cmd}`);
-
-    const { stdout, stderr } = await execAsync(cmd);
-
-    return { stdout, stderr };
-  } catch (error: unknown) {
-    // If execAsync throws, it still contains stdout/stderr
-    if (error instanceof Error && 'stdout' in error && 'stderr' in error) {
-      const execError = error as Error & { stdout: string; stderr: string };
-      return {
-        stdout: execError.stdout,
-        stderr: execError.stderr,
-      };
-    }
-
-    throw error;
+  // Add debug arguments if debug mode is enabled
+  if (GODOT_DEBUG_MODE) {
+    args.push('--debug-godot');
   }
+
+  logDebug(`Executing: ${godotPath} ${args.join(' ')}`);
+
+  const { stdout, stderr } = await spawnAsync(godotPath, args);
+
+  return { stdout, stderr };
 };

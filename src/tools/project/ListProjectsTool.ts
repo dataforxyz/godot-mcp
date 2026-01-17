@@ -9,6 +9,7 @@ import { ToolDefinition, ToolResponse } from '../../server/types';
 import { prepareToolArgs, validateBasicArgs } from '../BaseToolHandler';
 import { createErrorResponse } from '../../utils/ErrorHandler';
 import { findGodotProjects } from '../../utils/FileUtils';
+import { validatePath } from '../../core/PathManager';
 import { logDebug } from '../../utils/Logger';
 
 export const listProjectsDefinition: ToolDefinition = {
@@ -42,6 +43,13 @@ export const handleListProjects = async (args: any): Promise<ToolResponse> => {
 
   try {
     logDebug(`Listing Godot projects in directory: ${args.directory}`);
+
+    // Validate path to prevent traversal attacks
+    if (!validatePath(args.directory)) {
+      return createErrorResponse('Invalid directory path', [
+        'Provide a valid path without ".." or other potentially unsafe characters',
+      ]);
+    }
 
     if (!existsSync(args.directory)) {
       return createErrorResponse(`Directory does not exist: ${args.directory}`, [

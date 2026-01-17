@@ -14,6 +14,8 @@
     "prebuild": "npm run clean",
     "build": "tsc && node scripts/build.js",
     "test": "npm run build && node build/test/test.js",
+    "test:security": "npm run build && node build/test/security.test.js",
+    "test:all": "npm run test && npm run test:security",
     "dev": "nodemon --watch src --ext ts --exec \"npm run build\"",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
   },

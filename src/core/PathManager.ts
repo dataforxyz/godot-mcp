@@ -5,31 +5,78 @@
 
 import { normalize } from 'path';
 import { existsSync } from 'fs';
-import { promisify } from 'util';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 
 import { logDebug } from '../utils/Logger';
 
-const execAsync = promisify(exec);
+/**
+ * Execute a command using spawn and return stdout/stderr as a promise
+ */
+const spawnAsync = (
+  command: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> => {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { stdio: 'pipe' });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on('error', (err) => {
+      reject(err);
+    });
+
+    proc.on('close', (code) => {
+      resolve({ stdout, stderr });
+    });
+  });
+};
 
 // Cache for validated paths
 const validatedPaths = new Map<string, boolean>();
 
 /**
  * Validate a path to prevent path traversal attacks
+ * Decodes URL encoding BEFORE checking for traversal patterns
  */
 export const validatePath = (path: string): boolean => {
-  // Basic validation to prevent path traversal
-  if (!path || path.includes('..')) {
+  if (!path) {
     return false;
   }
 
-  // Decode any URL encoding that might have been applied incorrectly
+  // Decode URL encoding FIRST before any validation
+  let decodedPath = path;
   try {
-    path = decodeURIComponent(path);
+    // Decode multiple times to handle double-encoding attacks
+    let previousPath = '';
+    while (previousPath !== decodedPath) {
+      previousPath = decodedPath;
+      decodedPath = decodeURIComponent(decodedPath);
+    }
   } catch (error) {
-    // If decoding fails, continue with original path
+    // If decoding fails, use the original path but log it
     logDebug(`Failed to decode path: ${path}, error: ${error}`);
+    decodedPath = path;
+  }
+
+  // Check for path traversal patterns AFTER decoding
+  if (decodedPath.includes('..')) {
+    logDebug(`Path traversal attempt detected: ${path} -> ${decodedPath}`);
+    return false;
+  }
+
+  // Check for null bytes which could be used for path truncation
+  if (decodedPath.includes('\0')) {
+    logDebug(`Null byte injection attempt detected: ${path}`);
+    return false;
   }
 
   return true;
@@ -99,9 +146,8 @@ export const isValidGodotPath = async (path: string): Promise<boolean> => {
       return false;
     }
 
-    // Try to execute Godot with --version flag
-    const command = path === 'godot' ? 'godot --version' : `"${path}" --version`;
-    await execAsync(command);
+    // Try to execute Godot with --version flag using spawn (no shell)
+    await spawnAsync(path, ['--version']);
 
     logDebug(`Valid Godot path: ${path}`);
     validatedPaths.set(path, true);
